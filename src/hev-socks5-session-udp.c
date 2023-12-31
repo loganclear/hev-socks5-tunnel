@@ -7,12 +7,9 @@
  ============================================================================
  */
 
-#include <errno.h>
 #include <string.h>
-#include <unistd.h>
 
 #include <lwip/udp.h>
-#include <netinet/in.h>
 
 #include <hev-task.h>
 #include <hev-task-io.h>
@@ -22,6 +19,7 @@
 #include <hev-socks5-udp.h>
 #include <hev-socks5-misc.h>
 
+#include "hev-utils.h"
 #include "hev-config.h"
 #include "hev-logger.h"
 #include "hev-compiler.h"
@@ -123,28 +121,15 @@ hev_socks5_session_udp_fwd_b (HevSocks5SessionUDP *self)
         return -1;
     }
 
-    if (saddr->sa_family == AF_INET) {
-        struct sockaddr_in *adp;
+    buf->len = res;
+    buf->tot_len = res;
 
-        adp = (struct sockaddr_in *)saddr;
-        addr.type = IPADDR_TYPE_V4;
-        port = ntohs (adp->sin_port);
-        memcpy (&addr, &adp->sin_addr, 4);
-    } else if (saddr->sa_family == AF_INET6) {
-        struct sockaddr_in6 *adp;
-
-        adp = (struct sockaddr_in6 *)saddr;
-        addr.type = IPADDR_TYPE_V6;
-        port = ntohs (adp->sin6_port);
-        memcpy (&addr, &adp->sin6_addr, 16);
-    } else {
+    res = sock_to_lwip_addr (saddr, &addr, &port);
+    if (res < 0) {
         LOG_D ("%p socks5 session udp fwd b addr", self);
         pbuf_free (buf);
         return -1;
     }
-
-    buf->len = res;
-    buf->tot_len = res;
 
     hev_task_mutex_lock (self->mutex);
     err = udp_sendfrom (self->pcb, buf, &addr, port);
@@ -187,22 +172,7 @@ udp_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
     addr = &pcb->local_ip;
     port = pcb->local_port;
-
-    if (addr->type == IPADDR_TYPE_V4) {
-        struct sockaddr_in *adp;
-
-        adp = (struct sockaddr_in *)&frame->addr;
-        adp->sin_family = AF_INET;
-        adp->sin_port = htons (port);
-        memcpy (&adp->sin_addr, addr, 4);
-    } else if (addr->type == IPADDR_TYPE_V6) {
-        struct sockaddr_in6 *adp;
-
-        adp = (struct sockaddr_in6 *)&frame->addr;
-        adp->sin6_family = AF_INET6;
-        adp->sin6_port = htons (port);
-        memcpy (&adp->sin6_addr, addr, 16);
-    }
+    lwip_to_sock_addr (addr, port, (struct sockaddr *)&frame->addr);
 
     self->frames++;
     hev_list_add_tail (&self->frame_list, &frame->node);
@@ -270,13 +240,9 @@ hev_socks5_session_udp_bind (HevSocks5 *self, int fd,
     mark = srv->mark;
 
     if (mark) {
-        int res = 0;
+        int res;
 
-#if defined(__linux__)
-        res = setsockopt (fd, SOL_SOCKET, SO_MARK, &mark, sizeof (mark));
-#elif defined(__FreeBSD__)
-        res = setsockopt (fd, SOL_SOCKET, SO_USER_COOKIE, &mark, sizeof (mark));
-#endif
+        res = set_sock_mark (fd, mark);
         if (res < 0)
             return -1;
     }
